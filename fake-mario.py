@@ -17,6 +17,8 @@ from typing import Tuple, List, Optional, Sequence
 from enum import Enum
 from abc import ABC, abstractmethod
 
+BlockConfig = Tuple[int, int, int, int, str]
+
 
 # ================== 定数・グローバル設定 ==================
 
@@ -59,11 +61,15 @@ class Config:
     # ゴール設定
     GOAL_WIDTH: int = 50
     GOAL_HEIGHT: int = 80
-    GOAL_X: int = 3000  # ゴールのX座標（ワールド座標）
-    GOAL_Y: int = 350   # ゴールのY座標（ワールド座標）
+    GOAL_X: int = 3200  # ゴールのX座標（ワールド座標）
+    GOAL_Y: int = 410   # ゴールのY座標（ワールド座標）
     
     # ステージ設定
-    STAGE_MAX_X: int = 3100  # ステージの最大X座標
+    STAGE_MAX_X: int = 3300  # ステージの最大X座標
+
+    # 背景設定（将来背景画像に差し替え可能）
+    BACKGROUND_COLOR: Tuple[int, int, int] = COLOR_LIGHT_BLUE
+    BACKGROUND_IMAGE: Optional[pygame.Surface] = None
 
 
 class SceneType(Enum):
@@ -85,7 +91,10 @@ class Block:
     """
     
     def __init__(self, x: int, y: int, width: int = Config.BLOCK_WIDTH,
-                 height: int = Config.BLOCK_HEIGHT, color: Tuple[int, int, int] = Config.COLOR_GREEN) -> None:
+                 height: int = Config.BLOCK_HEIGHT,
+                 kind: str = "ground",
+                 color: Tuple[int, int, int] = Config.COLOR_GREEN,
+                 image: Optional[pygame.Surface] = None) -> None:
         """
         ブロックの初期化
         
@@ -94,14 +103,42 @@ class Block:
             y: Y座標（ワールド座標）
             width: ブロックの幅（ピクセル）
             height: ブロックの高さ（ピクセル）
+            kind: ブロックの種類（将来のテクスチャ差し替え用）
             color: ブロックの色（RGB）
+            image: 画像アセット（pygame.Surface）
         """
         self.x: int = x
         self.y: int = y
         self.width: int = width
         self.height: int = height
+        self.kind: str = kind
+        self.image: Optional[pygame.Surface] = image
         self.color: Tuple[int, int, int] = color
-    
+
+        if self.image is not None and self.image.get_size() != (self.width, self.height):
+            self.image = pygame.transform.scale(self.image, (self.width, self.height))
+
+        if self.image is None:
+            self.color = self._get_color_for_kind(kind)
+
+    def _get_color_for_kind(self, kind: str) -> Tuple[int, int, int]:
+        """
+        ブロックの種類に応じたカラーを返す
+        
+        Args:
+            kind: ブロックの種類
+        Returns:
+            表示色（RGB）
+        """
+        kind_to_color = {
+            "ground": Config.COLOR_GREEN,
+            "platform": Config.COLOR_GRAY,
+            "step": Config.COLOR_DARK_YELLOW,
+            "water": Config.COLOR_BLUE,
+            "goal": Config.COLOR_GOLD,
+        }
+        return kind_to_color.get(kind, self.color)
+
     def get_rect(self) -> pygame.Rect:
         """
         ブロックの矩形判定オブジェクトを取得
@@ -126,12 +163,12 @@ class Block:
         if screen_x + self.width < 0 or screen_x > Config.SCREEN_WIDTH:
             return
         
-        # ブロックを描画
         rect: pygame.Rect = pygame.Rect(screen_x, self.y, self.width, self.height)
-        pygame.draw.rect(surface, self.color, rect)
-        
-        # ブロックの枠線を描画（3ドットゲーム風のドット絵効果）
-        pygame.draw.rect(surface, Config.COLOR_BLACK, rect, 2)
+        if self.image is not None:
+            surface.blit(self.image, (screen_x, self.y))
+        else:
+            pygame.draw.rect(surface, self.color, rect)
+            pygame.draw.rect(surface, Config.COLOR_BLACK, rect, 2)
 
 
 # ================== ゴールクラス ==================
@@ -526,85 +563,197 @@ class GameScene(Scene):
         self.camera_x: int = 0  # カメラの X 座標（ワールド座標）
         self.score: int = 0
         self.font: pygame.font.Font = pygame.font.Font(None, 36)
+        self.background_image: Optional[pygame.Surface] = Config.BACKGROUND_IMAGE
     
     def _create_stage(self) -> List[Block]:
         """
-        ステージを作成（拡張版）
+        ステージを作成する
         
-        ワールド座標 X=0 から X=3000 以上の広さに、
-        複雑な足場レイアウトを作成します。
+        タプル形式のステージデータを元に、Block オブジェクトを
+        自動生成します。これにより、配置やサイズ、種類を直感的に
+        変更しやすくなります。
         
         Returns:
             ステージ上のすべてのブロックのリスト
         """
-        blocks: List[Block] = []
-        
-        # 第1セクション：初期エリア（X=0~400）
-        # 地面を敷く
-        for i in range(7):
-            blocks.append(Block(i * Config.BLOCK_WIDTH, 500))
-        
-        # 上昇する足場
-        blocks.append(Block(300, 420))
-        blocks.append(Block(350, 380))
-        blocks.append(Block(400, 340))
-        
-        # 第2セクション：中盤エリア（X=400~1000）
-        # 地面と浮き足場の複合構成
-        for i in range(7, 15):
-            blocks.append(Block(i * Config.BLOCK_WIDTH, 500))
-        
-        # 連続した浮き足場（壊れた橋風）
-        for i in range(6):
-            if i % 2 == 0:
-                blocks.append(Block(450 + i * 100, 380))
-        
-        # 階段状の足場
-        for i in range(4):
-            blocks.append(Block(850 + i * Config.BLOCK_WIDTH, 450 - i * Config.BLOCK_HEIGHT))
-        
-        # 第3セクション：中盤後期（X=1000~1600）
-        # 連続した高さの足場
-        blocks.append(Block(1100, 350))
-        blocks.append(Block(1200, 350))
-        blocks.append(Block(1300, 300))
-        blocks.append(Block(1400, 300))
-        blocks.append(Block(1500, 250))
-        blocks.append(Block(1600, 250))
-        
-        # 地面に戻る坂
-        for i in range(3):
-            blocks.append(Block(1700 + i * Config.BLOCK_WIDTH, 450 + i * Config.BLOCK_HEIGHT // 2))
-        
-        # 第4セクション：後半エリア（X=1900~2400）
-        # 地面
-        for i in range(20, 27):
-            blocks.append(Block(i * Config.BLOCK_WIDTH, 500))
-        
-        # 複雑な浮き足場パターン
-        blocks.append(Block(2000, 400))
-        blocks.append(Block(2100, 350))
-        blocks.append(Block(2150, 350))
-        blocks.append(Block(2200, 300))
-        blocks.append(Block(2250, 300))
-        blocks.append(Block(2300, 350))
-        blocks.append(Block(2350, 350))
-        blocks.append(Block(2400, 400))
-        
-        # 第5セクション：最終エリア（X=2400~3100）
-        # 地面
-        for i in range(27, 35):
-            blocks.append(Block(i * Config.BLOCK_WIDTH, 500))
-        
-        # ゴール手前の上昇足場
-        blocks.append(Block(2600, 420))
-        blocks.append(Block(2700, 380))
-        blocks.append(Block(2800, 350))
-        
-        # ゴール直前の着地足場
-        blocks.append(Block(2900, 350))
-        
-        return blocks
+        stage_layout: List[BlockConfig] = [
+            # 開始エリア：地面
+            (0, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (64, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (128, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (192, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (256, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (320, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (384, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (448, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (512, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (576, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (640, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (704, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (768, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (832, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (896, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (960, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (1024, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (1088, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (1152, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            
+            # 階段状の足場
+            (960, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+
+            (1024, 372, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (1024, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+
+            (1088, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (1088, 372, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (1088, 308, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+
+            (1152, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (1152, 372, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (1152, 308, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (1152, 244, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            
+            #穴
+            #(1216, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            #(1280, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+
+            # 逆階段状の足場
+            (1408, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (1408, 372, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (1408, 308, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (1408, 244, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+
+            (1472, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (1472, 372, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (1472, 308, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+
+            (1536, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (1536, 372, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+
+            (1600, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+
+
+            (1408, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (1472, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (1536, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (1600, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (1664, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (1728, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (1792, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (1856, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (1920, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            
+
+            (2176, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (2240, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (2304, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (2368, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (2432, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (2496, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (2560, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (2624, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (2688, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (2752, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (2816, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (2880, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (2944, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (3008, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (3072, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (3136, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (3200, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            (3264, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+
+
+
+            (384, 350, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            (448, 350, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            (512, 350, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            (576, 350, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            (640, 350, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            (512, 200, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+
+            #階段状の足場2
+            (2368, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+
+            (2432, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2432, 372, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+
+            (2496, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2496, 372, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2496, 308, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+
+            (2560, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2560, 372, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2560, 308, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2560, 244, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+
+            (2624, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2624, 372, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2624, 308, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2624, 244, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2624, 180, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+
+            (2688, 436, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2688, 372, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2688, 308, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2688, 244, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2688, 180, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+            (2688, 116, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "step"),
+
+
+
+
+            # 中盤：穴と浮き足場
+            #(512, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            #(576, 500, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "ground"),
+            # ここに穴
+            
+
+           #穴
+           
+            
+
+            # 浮遊足場
+            #(660, 380, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(740, 340, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(820, 300, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+
+            # 階段状足場
+            
+
+            # 中盤後期：高低差のある足場
+            #(1200, 420, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(1264, 380, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(1328, 340, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(1392, 300, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(1456, 260, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+
+            # 地面への復帰
+            
+            # 後半：穴を挟んだ連続足場
+            
+
+            #(1840, 420, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(1900, 360, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(1960, 320, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(2020, 280, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(2080, 240, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+
+            # 終盤：ゴール前の上昇ステージ
+            
+
+            #(2500, 420, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(2560, 380, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(2620, 340, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(2680, 300, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(2740, 260, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(2800, 300, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(2860, 340, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(2920, 380, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+            #(2980, 420, Config.BLOCK_WIDTH, Config.BLOCK_HEIGHT, "platform"),
+        ]
+
+        return [Block(x, y, width, height, kind=kind) for x, y, width, height, kind in stage_layout]
     
     def handle_input(self, event: pygame.event.EventType) -> None:
         """
@@ -635,7 +784,7 @@ class GameScene(Scene):
         if keys[pygame.K_ESCAPE]:
             return SceneType.TITLE
         
-        # プレイヤーを更新
+        # プレイヤーを更新            
         self.player.update(self.blocks)
         
         # カメラを更新（プレイヤーを追従）
@@ -674,8 +823,11 @@ class GameScene(Scene):
         Args:
             surface: 描画対象のサーフェス
         """
-        # 背景を描画
-        surface.fill(Config.COLOR_LIGHT_BLUE)
+        # 背景を描画（背景画像が設定されていれば画像を優先）
+        if self.background_image is not None:
+            surface.blit(self.background_image, (0, 0))
+        else:
+            surface.fill(Config.BACKGROUND_COLOR)
         
         # ブロックを描画
         for block in self.blocks:
@@ -948,4 +1100,4 @@ if __name__ == "__main__":
     このスクリプトを直接実行することでゲームが起動します。
     """
     game: Game = Game()
-    game.run()
+    game.run() 
