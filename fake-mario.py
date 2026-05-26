@@ -89,6 +89,11 @@ class Config:
     ENEMY_ZAKO_IMAGE_PATH: str = "雑魚的.png"
     ENEMY_BOSS_IMAGE_PATH: str = "ラスボス.png" 
 
+    TIME_LIMIT: float = 300.0
+    
+    ENEMY_WIDTH: int = 32      # ザコ敵の横幅
+    ENEMY_HEIGHT: int = 32     # ザコ敵の縦幅
+    ENEMY_SPEED: float = 2.0   # ザコ敵の歩くスピード
 class SceneType(Enum):
     """シーンの種類を定義する列挙型"""
     TITLE = 1
@@ -399,6 +404,8 @@ class Player:
             self.vy = -Config.PLAYER_JUMP_POWER
             self.is_jumping = True
             self.is_on_ground = False
+            # print(f"self.is_jumping:{self.is_jumping}")
+            # print(f"self.is_on_ground:{self.is_on_ground}")
     
     def apply_gravity(self) -> None:
         """重力を適用してY方向の速度を更新"""
@@ -415,7 +422,7 @@ class Player:
         self.x += self.vx
         self.y += self.vy
         
-        self.is_on_ground = False
+        self.is_on_ground = True #無限ジャンプ原因
         self._check_block_collisions(blocks)
         
         # 画面下部でゲームオーバー判定
@@ -442,14 +449,16 @@ class Player:
             min_overlap: int = min(overlap_y_from_top, overlap_y_from_bottom,
                                    overlap_x_from_left, overlap_x_from_right)
             
-            if min_overlap == overlap_y_from_top:
+            if min_overlap == overlap_y_from_top and self.vy >= 0:  # 上から着地
                 self.y = block_rect.top - self.height
                 self.vy = 0.0
                 self.is_on_ground = True
                 self.is_jumping = False
-            elif min_overlap == overlap_y_from_bottom:
+            elif min_overlap == overlap_y_from_bottom and self.vy < 0:
                 self.y = block_rect.bottom
                 self.vy = 0.0
+                self.is_on_ground = True
+                self.is_jumping = False
             elif min_overlap == overlap_x_from_left:
                 self.x = block_rect.left - self.width
             elif min_overlap == overlap_x_from_right:
@@ -530,7 +539,94 @@ class Scene(ABC):
         """
         pass
 
+# ================== 敵（通常ザコ＆ボス）システム ==================
 
+class Enemy:
+    """自動で歩き、壁で反転し、プレイヤーと接触判定を行うシンプルなザコ敵"""
+    
+    def __init__(self, x: int, y: int) -> None:
+        self.x: float = x
+        self.y: float = y
+        # 後でデザインを当てやすい標準的なサイズ
+        self.width: int = Config.ENEMY_WIDTH
+        self.height: int = Config.ENEMY_HEIGHT
+        self.vx: float = -Config.ENEMY_SPEED  # 最初は左に進む
+        self.vy: float = 0.0
+        # 仮のデザイン：通常のザコ敵は「赤色の四角」
+        self.color: Tuple[int, int, int] = Config.COLOR_RED
+        
+    def get_rect(self) -> pygame.Rect:
+        """衝突判定用の四角形データを返す"""
+        return pygame.Rect(int(self.x), int(self.y), self.width, self.height)
+        
+    def update(self, blocks: List[Block]) -> None:
+        """物理演算とブロック（床・壁）との当たり判定"""
+        # 重力の適用
+        self.vy += Config.GRAVITY
+        if self.vy > Config.MAX_FALL_SPEED:
+            self.vy = Config.MAX_FALL_SPEED
+            
+        self.x += self.vx
+        self.y += self.vy
+        
+        # 地形との衝突判定＆壁での反転
+        enemy_rect = self.get_rect()
+        for block in blocks:
+            block_rect = block.get_rect()
+            if enemy_rect.colliderect(block_rect):
+                overlap_x = min(enemy_rect.right - block_rect.left, block_rect.right - enemy_rect.left)
+                overlap_y = min(enemy_rect.bottom - block_rect.top, block_rect.bottom - enemy_rect.top)
+                
+                if overlap_y < overlap_x:
+                    if self.vy > 0:  # 床に着地
+                        self.y = block_rect.top - self.height
+                        self.vy = 0.0
+                else:  # 壁にぶつかったら反転
+                    if self.vx > 0:
+                        self.x = block_rect.left - self.width
+                    else:
+                        self.x = block_rect.right
+                    self.vx *= -1
+                    
+    def draw(self, surface: pygame.Surface, camera_x: int) -> None:
+        """仮の姿（シンプルな四角形）として描画"""
+        screen_x = int(self.x) - camera_x
+        # 画面外なら描画をスキップ
+        if screen_x + self.width < 0 or screen_x > Config.SCREEN_WIDTH:
+            return
+            
+        rect = pygame.Rect(screen_x, int(self.y), self.width, self.height)
+        pygame.draw.rect(surface, self.color, rect)
+        pygame.draw.rect(surface, Config.COLOR_BLACK, rect, 2)  # 輪郭線
+
+
+class Boss(Enemy):
+    """3回踏まないと倒せない、システム確認用の巨大なボスクラス"""
+    
+    def __init__(self, x: int, y: int) -> None:
+        super().__init__(x, y)
+        # ラスボスらしく、ザコ敵よりもサイズを大きく設定
+        self.width = 80
+        self.height = 96
+        # 移動スピードはどっしり遅め
+        self.vx = -1.2
+        # 仮のデザイン：ラスボスは「緑色の大きな四角」
+        self.color = (0, 150, 50) 
+        
+        # ボスの固有システム：体力（HP）
+        self.hp: int = 3
+
+    def take_damage(self) -> bool:
+        """ダメージを受けた（踏まれた）時の処理"""
+        self.hp -= 1
+        if self.hp <= 0:
+            return True  # 撃破フラグ（消滅）
+            
+        # ダメージを受けると怒ってスピードが1.5倍になるギミック
+        self.vx *= 1.5
+        return False  # まだ生きてる
+    
+# === ここまで追加 ===
 class TitleScene(Scene):
     """タイトル画面シーン"""
     
@@ -547,7 +643,8 @@ class TitleScene(Scene):
             event: pygame のイベントオブジェクト
         """
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE:
+            print("s")
+            if event.key == pygame.K_RETURN:
                 # スペースキーでゲーム開始
                 return
     
@@ -559,7 +656,7 @@ class TitleScene(Scene):
             スペースキーが押されたらゲームシーンに切り替え
         """
         keys: pygame.key.ScancodeWrapper = pygame.key.get_pressed()
-        if keys[pygame.K_SPACE]:
+        if keys[pygame.K_RETURN]:
             return SceneType.GAME
         return None
     
@@ -582,7 +679,7 @@ class TitleScene(Scene):
         
         # 説明テキストを描画
         instruction_text: pygame.Surface = self.instruction_font.render(
-            "Press SPACE to Start", True, Config.COLOR_BLACK)
+            "Press ENTER to Start", True, Config.COLOR_BLACK)
         instruction_rect: pygame.Rect = instruction_text.get_rect(
             center=(Config.SCREEN_WIDTH // 2, 350))
         surface.blit(instruction_text, instruction_rect)
@@ -591,7 +688,7 @@ class TitleScene(Scene):
         control_font: pygame.font.Font = pygame.font.Font(None, 30)
         controls: List[str] = [
             "LEFT/RIGHT: Move",
-            "SPACE: Jump",
+            "ENTER: Jump",
             "ESC: Return to Title"
         ]
         for i, control in enumerate(controls):
@@ -613,6 +710,18 @@ class GameScene(Scene):
         self.camera_x: int = 0  # カメラの X 座標（ワールド座標）
         self.score: int = 0
         self.font: pygame.font.Font = pygame.font.Font(None, 36)
+        self.time_remaining: float = Config.TIME_LIMIT
+        
+        # self.enemies = []
+        # 道中の通常ザコ敵のみ（テスト用に目の前に配置）
+        self.enemies: List[Enemy] = [
+            Enemy(500, 300),
+            Enemy(1200, 200),
+            Enemy(2000, 300)
+        ]
+        
+        # ボスをゴール手前に配置（テスト用に目の前に配置）
+        self.boss: Optional[Boss] = Boss(3000, 200)
         try:
             import os
             # プログラムがあるフォルダの場所を絶対パスで取得
@@ -821,31 +930,16 @@ class GameScene(Scene):
         return [Block(x, y, width, height, kind=kind) for x, y, width, height, kind in stage_layout]
     
     def handle_input(self, event: pygame.event.EventType) -> None:
-        """
-        イベント処理（シーン切り替え判定）
-        
-        Args:
-            event: pygame のイベントオブジェクト
-        """
+        """イベント処理（シーン切り替え判定）"""
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
-                # ESCキーでタイトルに戻る
                 return
     
     def update(self) -> Optional[SceneType]:
-        """
-        ゲーム状態の更新
-        
-        Returns:
-            ゴール到達ならゲームクリアシーンに切り替え、
-            ゲームオーバーならゲームオーバーシーンに切り替え、
-            ESCキーでタイトルシーンに切り替え
-        """
-        # キー入力を処理
+        """ゲーム状態の更新"""
         keys: pygame.key.ScancodeWrapper = pygame.key.get_pressed()
         self.player.handle_input(keys)
         
-        # ESCキーでタイトルに戻る
         if keys[pygame.K_ESCAPE]:
             return SceneType.TITLE
         
@@ -862,16 +956,61 @@ class GameScene(Scene):
         # ゲームオーバー判定（プレイヤーの Y 座標が画面外）
         if self.player.y > Config.SCREEN_HEIGHT + 100:
             return SceneType.GAME_OVER
+        # 制限時間のカウントダウン
+        self.time_remaining -= 1 / Config.FPS
+        if self.time_remaining <= 0:
+            self.time_remaining = 0
+            return SceneType.GAME_OVER
         
+        self.player.update(self.blocks)
+        player_rect = self.player.get_rect()
+        
+        # --- ① 通常ザコ敵のループ（衝突＆画面外消滅処理） ---
+        enemies_to_remove = []
+        for enemy in self.enemies:
+            enemy.update(self.blocks)
+            
+            # カメラの左外に完全に見えなくなったら消滅
+            if enemy.x + enemy.width < self.camera_x:
+                enemies_to_remove.append(enemy)
+                continue
+            
+            # 通常敵との衝突判定
+            if player_rect.colliderect(enemy.get_rect()):
+                if player_rect.bottom <= enemy.get_rect().top + 15 and self.player.vy >= 0:
+                    self.player.vy = -Config.PLAYER_JUMP_POWER * 0.8
+                    enemies_to_remove.append(enemy)
+                    self.score += 100
+                else:
+                    return SceneType.GAME_OVER
+                    
+        for enemy in enemies_to_remove:
+            self.enemies.remove(enemy)
+            
+        # --- ② ボスの計算と衝突処理 ---
+        if self.boss is not None:
+            self.boss.update(self.blocks)
+            if player_rect.colliderect(self.boss.get_rect()):
+                if player_rect.bottom <= self.boss.get_rect().top + 20 and self.player.vy >= 0:
+                    self.player.vy = -Config.PLAYER_JUMP_POWER * 1.0  # ボスを踏むと大ジャンプ
+                    if self.boss.take_damage():
+                        self.boss = None
+                        self.score += 1000
+                else:
+                    return SceneType.GAME_OVER
+        
+        self._update_camera()
+        
+        if self.goal.check_collision(self.player.get_rect()): 
+            return SceneType.GAME_CLEAR
+        if self.player.y > Config.SCREEN_HEIGHT + 100: 
+            return SceneType.GAME_OVER
+            
         return None
-    
+
     def _update_camera(self) -> None:
         """カメラの位置を更新（プレイヤーを追従）"""
-        # プレイヤーが画面の中央（400px）を超えたらカメラをスクロール
         target_camera_x: int = int(self.player.x) - Config.SCREEN_WIDTH // 4
-        
-        # カメラの最小値は0（ステージの左端）
-        # カメラの最大値を設定してステージ外を映さないようにする
         max_camera_x: int = Config.STAGE_MAX_X - Config.SCREEN_WIDTH
         
         if target_camera_x < 0:
@@ -893,6 +1032,9 @@ class GameScene(Scene):
             surface.blit(self.background_image, (0, 0))
         else:
             surface.fill(Config.BACKGROUND_COLOR)
+        # """ゲーム画面の描画"""
+        # # 背景を描画
+        # surface.fill(Config.COLOR_LIGHT_BLUE)
         
         # ブロックを描画
         for block in self.blocks:
@@ -901,20 +1043,29 @@ class GameScene(Scene):
         # ゴールを描画
         self.goal.draw(surface, self.camera_x)
         
+        # --- 通常ザコ敵の描画 ---
+        for enemy in self.enemies: 
+            enemy.draw(surface, self.camera_x)
+            
+        # --- ボスの描画と残りHP表示 ---
+        if self.boss is not None:
+            self.boss.draw(surface, self.camera_x)
+            boss_screen_x = int(self.boss.x) - self.camera_x
+            hp_text = self.font.render("HP: " + "★" * self.boss.hp, True, Config.COLOR_RED)
+            surface.blit(hp_text, (boss_screen_x, int(self.boss.y) - 30))
+        
         # プレイヤーを描画
         self.player.draw(surface, self.camera_x)
         
-        # スコアと座標情報を描画（デバッグ用）
-        score_text: pygame.Surface = self.font.render(
-            f"Score: {self.score} | X: {int(self.player.x)}", True, Config.COLOR_BLACK)
+        # 情報UI（タイムとスコア、座標）の描画
+        seconds = max(0, int(self.time_remaining))
+        score_text = self.font.render(f"Score: {self.score} | TIME: {seconds} | X: {int(self.player.x)}", True, Config.COLOR_BLACK)
         surface.blit(score_text, (10, 10))
         
         # 操作ヒント
         hint_font: pygame.font.Font = pygame.font.Font(None, 20)
-        hint_text: pygame.Surface = hint_font.render(
-            "ESC: Back to Title", True, Config.COLOR_BLACK)
+        hint_text: pygame.Surface = hint_font.render("ESC: Back to Title", True, Config.COLOR_BLACK)
         surface.blit(hint_text, (Config.SCREEN_WIDTH - 200, 10))
-
 
 class GameClearScene(Scene):
     """ゲームクリア画面シーン"""
@@ -1000,7 +1151,7 @@ class GameOverScene(Scene):
             event: pygame のイベントオブジェクト
         """
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE:
+            if event.key == pygame.K_RETURN:
                 # スペースキーでリトライ
                 return
             elif event.key == pygame.K_ESCAPE:
@@ -1016,7 +1167,7 @@ class GameOverScene(Scene):
         """
         keys: pygame.key.ScancodeWrapper = pygame.key.get_pressed()
         
-        if keys[pygame.K_SPACE]:
+        if keys[pygame.K_RETURN]:
             return SceneType.GAME
         elif keys[pygame.K_ESCAPE]:
             return SceneType.TITLE
@@ -1141,6 +1292,8 @@ class Game:
         while self.running:
             # イベント処理
             self.handle_events()
+            
+            print(self.scenes[SceneType.GAME].player.is_on_ground)
             
             # 状態更新
             self.update()
