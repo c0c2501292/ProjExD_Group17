@@ -1,6 +1,19 @@
+"""
+横スクロールアクションゲーム（マリオ風）- ゴール機能付き拡張版
+
+Pygameを使用した2Dドット絵スタイルの横スクロールアクションゲームの
+完全版です。以下の機能を備えています：
+- シーン管理（タイトル、ゲーム本編、ゲームクリア、ゲームオーバー）
+- プレイヤーの移動・ジャンプ・重力処理
+- ブロックによるステージ構築
+- 横スクロール（カメラワーク）機能
+- ゴール機能（Goal クラス）
+- 拡張性の高いオブジェクト指向設計
+"""
+
+import os
 import pygame
 import sys
-import os
 from typing import Tuple, List, Optional
 from enum import Enum
 from abc import ABC, abstractmethod
@@ -115,7 +128,7 @@ class Block:
                     full_path = os.path.join(current_dir, file_name)
                     self.image = pygame.image.load(full_path).convert_alpha()
             except Exception as e:
-                print(f"ブロック画像（{kind}）の読み込みに失敗: {e}")
+                # print(f"ブロック画像（{kind}）の読み込みに失敗: {e}")
                 self.image = None
 
         if self.image is not None:
@@ -427,7 +440,8 @@ class Player:
             return SceneType.GAME_OVER
         return None
 
-    def handle_input(self, keys: pygame.key.ScancodeWrapper) -> None:
+    def handle_input(self, keys: 'pygame.key.ScancodeWrapper') -> bool:
+        jumped = False
         if keys[pygame.K_LEFT]:
             self.vx = -Config.PLAYER_MOVE_SPEED
             self.facing_right = False
@@ -441,12 +455,15 @@ class Player:
             self.vy = -Config.PLAYER_JUMP_POWER
             self.is_jumping = True
             self.is_on_ground = False
+            jumped = True
             
         if keys[pygame.K_x] and self.state == PlayerState.FIRE and self.fire_cooldown == 0:
             fx = self.x + self.width if self.facing_right else self.x - 16
             fy = self.y + self.height // 3
             self.pending_fireballs.append(Fireball(fx, fy, self.facing_right))
             self.fire_cooldown = 15
+            
+        return jumped
 
     def update(self, blocks: List[Block]) -> None:
         if self.fire_cooldown > 0:
@@ -458,7 +475,14 @@ class Player:
         if self.damage_invincible_timer > 0:
             self.damage_invincible_timer -= 1
 
+        self.apply_gravity(blocks)
+
+    def apply_gravity(self, blocks: List[Block]) -> None:
+        """重力を適用してY方向の速度を更新"""
+        # 重力加速度を追加
         self.vy += Config.GRAVITY
+
+        # 最大落下速度に制限
         if self.vy > Config.MAX_FALL_SPEED:
             self.vy = Config.MAX_FALL_SPEED
         
@@ -583,13 +607,16 @@ class TitleScene(Scene):
 
 
 class GameScene(Scene):
-    def __init__(self) -> None:
-        self.player = Player()
-        self.blocks = self._create_stage()
-        self.goal = Goal()
-        self.camera_x = 0
-        self.score = 0
-        self.font = pygame.font.Font(None, 36)
+    """ゲーム本編シーン"""
+    def __init__(self, sound_player: Optional["SoundPlayer"] = None) -> None:
+        """ゲーム本編シーンの初期化"""
+        self.sound_player: "SoundPlayer" = sound_player if sound_player is not None else SoundPlayer()
+        self.player: Player = Player()
+        self.blocks: List[Block] = self._create_stage()
+        self.goal: Goal = Goal()
+        self.camera_x: int = 0  # カメラの X 座標（ワールド座標）
+        self.score: int = 0
+        self.font: pygame.font.Font = pygame.font.Font(None, 36)
         self.time_remaining = Config.TIME_LIMIT
         
         self.items = [
@@ -721,8 +748,19 @@ class GameScene(Scene):
         pass
     
     def update(self) -> Optional[SceneType]:
+        """
+        ゲーム状態の更新
+        
+        Returns:
+            ゴール到達ならゲームクリアシーンに切り替え、
+            ゲームオーバーならゲームオーバーシーンに切り替え、
+            ESCキーでタイトルシーンに切り替え
+        """
+        # キー入力を処理
         keys = pygame.key.get_pressed()
-        self.player.handle_input(keys)
+        jumped = self.player.handle_input(keys)
+        if jumped:
+            self.sound_player.play_jump()
         
         if keys[pygame.K_ESCAPE]:
             return SceneType.TITLE
@@ -812,6 +850,8 @@ class GameScene(Scene):
             return SceneType.GAME_CLEAR
         
         if self.player.y > Config.SCREEN_HEIGHT + 100:
+            self.sound_player.play_death()
+            pygame.time.wait(1500)
             return SceneType.GAME_OVER
 
         self.time_remaining -= 1 / Config.FPS
@@ -899,18 +939,130 @@ class GameOverScene(Scene):
 
 
 # ==============================================================================
-# 5. ゲームメインクラス
+# 5. 音声・ゲームメインクラス (Audio & Main Game Loop)
 # ==============================================================================
+class MusicPlayer:
+    """アップロードされたSeven_Bells_Ringing.mp3を再生するクラス"""
+    def __init__(self, filepath: str = "Seven_Bells_Ringing.mp3"):
+        self.filepath = filepath
+        self.playing = False
+
+    @property
+    def resolved_path(self) -> str:
+        """音声ファイルのパスをスクリプトの位置基準で解決する"""
+        if os.path.isabs(self.filepath):
+            return self.filepath
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), self.filepath)
+
+    def play(self):
+        """BGMをループ再生する"""
+        try:
+            if not self.playing:
+                pygame.mixer.music.load(self.resolved_path)
+                pygame.mixer.music.play(-1)  # -1で無限ループ
+                self.playing = True
+        except pygame.error as e:
+            # print(f"BGMの読み込みに失敗しました: {e}")
+            pass
+
+    def stop(self):
+        """BGMを停止する"""
+        if self.playing:
+            pygame.mixer.music.stop()
+            self.playing = False
+
+
+class SoundPlayer:
+    def __init__(self, filepath_map: Optional[dict[str, str]] = None) -> None:
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
+
+        pygame.mixer.set_num_channels(16)
+
+        self.filepath_map: dict[str, str] = filepath_map or {
+            "jump": "和太鼓でドン.wav",      
+            "death": "ちゃんちゃん_1.wav", 
+            "fire": "ボヨン.wav",           
+            "enemy": "会心の一撃2.wav",    
+            "star": "シャキーン1.wav",     
+        }
+        self.sounds: dict[str, pygame.mixer.Sound] = {}
+
+        for name, filename in self.filepath_map.items():
+            resolved = self._resolve_path(filename)
+            if not os.path.exists(resolved):
+                # print(f"効果音ファイルが見つかりません: {resolved}")
+                continue
+
+            try:
+                self.sounds[name] = pygame.mixer.Sound(resolved)
+            except pygame.error as e:
+                # print(f"{name}の読み込みに失敗しました: {e}")
+                pass
+
+    def _resolve_path(self, filepath: str) -> str:
+        """効果音ファイルのパスをスクリプトの位置基準で解決する"""
+        if os.path.isabs(filepath):
+            return filepath
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), filepath)
+
+    def play(self, sound_name: str) -> None:
+        """指定した効果音を再生する"""
+        sound = self.sounds.get(sound_name)
+        if sound is None:
+            return
+
+        try:
+            sound.set_volume(1.0)
+            channel = sound.play()
+            if channel is not None:
+                channel.set_volume(1.0)
+        except pygame.error as e:
+            pass
+
+    def play_jump(self) -> None:
+        self.play("jump")
+
+    def play_death(self) -> None:
+        self.play("death")
+
+    def play_fire(self) -> None:
+        self.play("fire")
+
+    def play_enemy(self) -> None:
+        self.play("enemy")
+
+    def play_star(self) -> None:
+        self.play("star")
+
+
 class Game:
+    """
+    ゲーム全体を管理するメインクラス
+    """
+    
     def __init__(self) -> None:
+        """ゲームの初期化"""
+        pygame.mixer.pre_init(44100, -16, 2, 512)
         pygame.init()
-        self.surface = pygame.display.set_mode((Config.SCREEN_WIDTH, Config.SCREEN_HEIGHT))
-        pygame.display.set_caption("Fake Mario")
-        self.clock = pygame.time.Clock()
-        self.current_scene_type = SceneType.TITLE
-        self.scenes = {
+        pygame.mixer.init()
+
+        self.sound_player = SoundPlayer()
+
+        # BGMプレイヤーのインスタンス作成
+        self.music_player = MusicPlayer("Seven_Bells_Ringing.mp3")
+        self.music_player.play()
+        
+        self.surface: pygame.Surface = pygame.display.set_mode(
+            (Config.SCREEN_WIDTH, Config.SCREEN_HEIGHT))
+        pygame.display.set_caption("Fake Mario - 2D Platformer")
+        
+        self.clock: pygame.time.Clock = pygame.time.Clock()
+        
+        self.current_scene_type: SceneType = SceneType.TITLE
+        self.scenes: dict = {
             SceneType.TITLE: TitleScene(),
-            SceneType.GAME: GameScene(),
+            SceneType.GAME: GameScene(self.sound_player),
             SceneType.GAME_OVER: GameOverScene(),
             SceneType.GAME_CLEAR: GameClearScene()
         }
@@ -929,10 +1081,17 @@ class Game:
     def update(self) -> None:
         current_scene = self.get_current_scene()
         next_scene_type = current_scene.update()
+        
         if next_scene_type is not None:
             self.current_scene_type = next_scene_type
-            if self.current_scene_type in (SceneType.GAME, SceneType.GAME_OVER, SceneType.GAME_CLEAR):
-                self.scenes[self.current_scene_type] = type(self.scenes[self.current_scene_type])()
+            
+            # シーン切り替え時に新しいインスタンスを作成（状態をリセット）
+            if self.current_scene_type == SceneType.GAME:
+                self.scenes[SceneType.GAME] = GameScene(self.sound_player)
+            elif self.current_scene_type == SceneType.GAME_OVER:
+                self.scenes[SceneType.GAME_OVER] = GameOverScene()
+            elif self.current_scene_type == SceneType.GAME_CLEAR:
+                self.scenes[SceneType.GAME_CLEAR] = GameClearScene()
     
     def draw(self) -> None:
         self.get_current_scene().draw(self.surface)
