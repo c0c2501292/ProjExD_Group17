@@ -12,6 +12,7 @@ Pygameを使用した2Dドット絵スタイルの横スクロールアクショ
 """
 
 import os
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 import pygame
 import sys
 from typing import Tuple, List, Optional
