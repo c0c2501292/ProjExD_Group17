@@ -1,5 +1,5 @@
 # フェイクマリオ
-![title](fig\a.png)
+![title](fig/a.png)
 
 ## 実行環境の必要条件
 * python >= 3.10
